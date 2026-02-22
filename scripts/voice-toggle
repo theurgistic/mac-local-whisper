@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+"""Send a toggle command to the voice server and inject transcribed text into tmux."""
+
+import json
+import socket
+import subprocess
+import sys
+
+SOCKET_PATH = "/tmp/mac-local-whisper.sock"
+
+
+def tmux_msg(msg: str) -> None:
+    subprocess.run(["tmux", "display-message", msg], check=False)
+
+
+def tmux_send(pane_id: str, text: str) -> None:
+    subprocess.run(["tmux", "send-keys", "-t", pane_id, "-l", text], check=False)
+
+
+def main() -> None:
+    if len(sys.argv) < 2:
+        print("Usage: voice-toggle <pane_id>", file=sys.stderr)
+        sys.exit(1)
+
+    pane_id = sys.argv[1]
+
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(120)
+        sock.connect(SOCKET_PATH)
+        sock.sendall(b"toggle")
+        sock.shutdown(socket.SHUT_WR)
+
+        data = b""
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        sock.close()
+
+        result = json.loads(data.decode("utf-8"))
+        status = result.get("status")
+
+        if status == "recording":
+            tmux_msg("Recording...")
+        elif status == "done":
+            text = result.get("text", "")
+            if text:
+                tmux_send(pane_id, text)
+            tmux_msg("Transcription complete.")
+        elif "error" in result:
+            tmux_msg(f"Error: {result['error']}")
+
+    except ConnectionRefusedError:
+        tmux_msg("Voice server not running.")
+    except FileNotFoundError:
+        tmux_msg("Voice server not running.")
+    except Exception as e:
+        tmux_msg(f"Toggle error: {e}")
+
+
+if __name__ == "__main__":
+    main()
